@@ -3,10 +3,16 @@ import os
 import shutil
 import time
 import traceback
-
 from flask import Flask, request, jsonify
 import pandas as pd
 from sklearn.externals import joblib
+from gcstorage import upload_model, delete_model, get_model, load_model, check_modle
+
+
+model_directory = 'model'
+model_file_name = '%s/model.pkl' % model_directory
+model_columns_file_name = '%s/model_columns.pkl' % model_directory
+
 
 def shutdown_server():
     func = request.environ.get('werkzeug.server.shutdown')
@@ -14,27 +20,10 @@ def shutdown_server():
         raise RuntimeError('Not running with the Werkzeug Server')
     func()
 
-def load_model(model_directory):
-    try:
-        # Find the newest model file in the directory
-        files = [x for x in os.listdir(model_directory) if x.endswith(".pkl")]
-        newest = max(files , key = os.path.getctime)
-        #print("Recently modified Docs",newest)
-        model_file_name = '%s/%s' % (model_directory,newest[0])        
-        clf = joblib.load(model_file_name)
-        #model_columns = joblib.load(model_columns_file_name)
-        return clf        
-    except Exception as e:
-        clf = None
-        raise FileNotFoundError(
-            "No model found in %s with suffix '.pkl' (%s)" % (model_directory, e))
 
 app = Flask(__name__)
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
 
-# inputs
-#training_data = 'data/titanic.csv'
-#include = ['Age', 'Sex', 'Embarked', 'Survived']
-#dependent_variable = include[-1]
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -43,28 +32,26 @@ def predict():
         try:
             json_ = request.json
             query = pd.get_dummies(pd.DataFrame(json_))
-
-            # https://github.com/amirziai/sklearnflask/issues/3
-            # Thanks to @lorenzori
             query = query.reindex(columns=model_columns, fill_value=0)
-
-            prediction = list(clf.predict(query))
-
+            prediction = clf.predict(query).tolist()
             return jsonify({'prediction': prediction})
         except Exception as e:
-
             return jsonify({'error': str(e), 'trace': traceback.format_exc()})
     else:
         print('train first')
         return 'no model here'
+
+
 predict.counter = 0
 
 
 @app.route('/train', methods=['GET'])
 def train():
-    # using random forest as an example
-    # can do the training separately and just update the pickles
     from sklearn.ensemble import RandomForestClassifier as rf
+    # inputs
+    training_data = 'data/titanic.csv'
+    include = ['Age', 'Sex', 'Embarked', 'Survived']
+    dependent_variable = include[-1]
 
     df = pd.read_csv(training_data)
     df_ = df[include]
@@ -75,7 +62,8 @@ def train():
         if col_type == 'O':
             categoricals.append(col)
         else:
-            df_[col].fillna(0, inplace=True)  # fill NA's with 0 for ints/floats, too generic
+            # fill NA's with 0 for ints/floats, too generic
+            df_[col].fillna(0, inplace=True)
 
     # get_dummies effectively creates one-hot encoded variables
     df_ohe = pd.get_dummies(df_, columns=categoricals, dummy_na=True)
@@ -85,7 +73,7 @@ def train():
 
     # capture a list of columns that will be used for prediction
     global model_columns
-    model_columns = list(x.columns)
+    model_columns = x.columns.tolist()
     joblib.dump(model_columns, model_columns_file_name)
 
     global clf
@@ -111,16 +99,44 @@ def wipe():
         print(str(e))
         return 'Could not remove and recreate the model directory'
 
-@app.route('/shutdown', methods=['POST'])
+
+@app.route('/upload', methods=['POST'])
+def uploadmodel():
+    bucket_name = request.args.get('bucket_name')
+    file_name = request.args.get('file_name')
+    file_path = request.args.get('file_path')
+    return upload_model(bucket_name, file_name, file_path)
+
+
+@app.route('/get', methods=['GET'])
+def getmodels():
+    bucket_name = request.args.get('bucket_name')
+    return get_model(bucket_name)
+
+
+@app.route('/delete', methods=['POST'])
+def deletemodel():
+    bucket_name = request.args.get('bucket_name')
+    file_name = request.args.get('file_name')
+    file_path = request.args.get('file_path')
+    return delete_model(bucket_name, file_name, file_path)
+
+
+@app.route('/shutdown', methods=['GET'])
 def shutdown():
     shutdown_server()
     return 'Server shutting down...'
+
 
 if __name__ == '__main__':
     try:
         port = int(sys.argv[1])
     except Exception as e:
-        port = 80
-    clf = load_model( os.getenv("MODEL_DIR", default='model/'))
-    
-    app.run(host='0.0.0.0', port=port, debug=True)
+        port = 5000
+    print("Checking if model is valid")
+    check_modle(os.getenv("GCS_MODEL_BUCKET", default='generic-model'),
+                os.getenv("MODEL_NAME", default='model.pkl'))
+    print("Loading model to fs")
+    clf = load_model(os.getenv("GCS_MODEL_BUCKET", default='generic-model'),
+                     os.getenv("MODEL_NAME", default='model.pkl'))
+    app.run(host='0.0.0.0', port=port, debug=False)

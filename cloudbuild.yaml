@@ -1,0 +1,21 @@
+---
+steps:
+- id: 'Build model-deployer docker image'
+  name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/$PROJECT_ID/$REPO_NAME/$BRANCH_NAME:$SHORT_SHA', '.']
+- id: 'Push model-deployer docker image to Google Container Registery'
+  name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/$PROJECT_ID/$REPO_NAME/$BRANCH_NAME:$SHORT_SHA']
+- id: 'Set new docker image variable in kubernetes deployment yaml file'
+  name: 'ubuntu'
+  args: ['bash','-c','sed -i "s,MODEL_IMAGE_NAME,gcr.io/$PROJECT_ID/$REPO_NAME/$BRANCH_NAME:$SHORT_SHA," *.yaml']
+- id: 'Set Latest Image version in kubernetes deployment yaml file'
+  name: 'ubuntu'
+  args: ['bash','-c','sed -i "s,BUILD_VERSION,$SHORT_SHA," *.yaml']
+- id: Deploy model to Kubernetes Cluster
+  name: 'gcr.io/cloud-builders/kubectl'
+  args: ['apply', '-f', 'model.yaml']
+  env:
+  - 'CLOUDSDK_COMPUTE_ZONE=us-central1-a' #Change this
+  - 'CLOUDSDK_CONTAINER_CLUSTER=model-spike' #Change this
+images: ['gcr.io/$PROJECT_ID/$REPO_NAME/$BRANCH_NAME:$SHORT_SHA']
